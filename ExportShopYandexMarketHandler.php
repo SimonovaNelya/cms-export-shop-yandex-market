@@ -92,10 +92,6 @@ class ExportShopYandexMarketHandler extends ExportHandler
      * @var string
      */
     public $vendor = '';
-    /**
-     * @var string
-     */
-    public $vendorArray = '';
 
     /**
      * @var string
@@ -111,6 +107,8 @@ class ExportShopYandexMarketHandler extends ExportHandler
      * @var int
      */
     public $max_urlsets = 500;
+
+    public $vendorArray = '';
 
 
     /**
@@ -461,6 +459,7 @@ class ExportShopYandexMarketHandler extends ExportHandler
         )));
 		$shop->appendChild(new \DOMElement('platform', "SkeekS CMS"));
 
+
         $this->_appendCurrencies($shop);
         $this->_appendCategories($shop);
 
@@ -607,7 +606,6 @@ class ExportShopYandexMarketHandler extends ExportHandler
 
             for ($i >= 0; $i < $pages->pageCount; $i ++)
             {
-                $this->result->stdout("\tЗанято памяти: \n". (memory_get_usage() - $this->mem_start));
                 $pages->setPage($i);
 
                 $this->result->stdout("\t\t\t\t Page = {$i}\n");
@@ -667,16 +665,11 @@ class ExportShopYandexMarketHandler extends ExportHandler
                     unset($element, $elementId);
                 }
 
-                if (!$result) continue;
                 $publicUrl = $this->generateDataFile("temp_offers_page{$i}.xml", $result);
-                $this->result->stdout("\tЗанято памяти: \n". (memory_get_usage() - $this->mem_start."\n"));
-                unset($result);
                 $this->result->stdout("\tФайл успешно сгенерирован: {$publicUrl}\n");
-                $this->result->stdout("\tОбработано товаров: {$successAdded}\n");
-                $this->result->stdout("\tЗанято памяти: \n". (memory_get_usage() - $this->mem_start."\n"));
                 $files[] = $publicUrl;
-            }
 
+            }
 
             $this->result->stdout("\tДобавлено в файл: {$successAdded}\n");
         }
@@ -756,8 +749,8 @@ class ExportShopYandexMarketHandler extends ExportHandler
                 {
                     if ($value = $element->relatedPropertiesModel->getAttribute($propertyName))
                     {
-                        $brandName = CmsContentElement::findOne($value);
-                        $xoffer->appendChild(new \DOMElement('vendor', $brandName->name));
+                        $smartName = $element->relatedPropertiesModel->getSmartAttribute($propertyName);
+                        $xoffer->appendChild(new \DOMElement('vendor', $smartName));
 
                         unset($value);
                     }
@@ -912,7 +905,11 @@ class ExportShopYandexMarketHandler extends ExportHandler
             $data['currencyId'] = $money->getCurrency()->getCurrencyCode();
         }
 
-
+        /*
+         * Функция getSmartAttribute не всегда возвращает значение,
+         * даже тогда, когда оно есть, поэтому сделала запрос в базу.
+         * Чтобы не лезть в базу за каждым брендом, выбранный бренд сохраняю в $this->>vendorArray
+         * */
         if ($this->vendor)
         {
             if ($propertyName = $this->getRelatedPropertyName($this->vendor))
@@ -921,17 +918,26 @@ class ExportShopYandexMarketHandler extends ExportHandler
                 {
                     if ($value = $element->relatedPropertiesModel->getAttribute($propertyName))
                     {
-                        if ($this->vendorArray && $this->vendorArray[$value])
+                        if ($brandName = $this->vendorArray[$value])
                         {
-                            $data['vendor'] = htmlspecialchars($this->vendorArray[$value]);
+                            $data['vendor'] = $brandName;
+                            $this->result->stdout("\tvendor: {$brandName}\n");
                         }
                         else
                         {
                             $brandModel = CmsContentElement::findOne($value);
-                            $this->vendorArray[$value]  =  $brandModel->name;
-                            $data['vendor'] = htmlspecialchars($brandModel->name);
-                        }
+                            if ($brandModel)
+                            {
+                                $data['vendor'] = $brandModel->name;
 
+                                $this->vendorArray = [
+                                    $propertyName => $brandName->name
+                                ];
+
+                                $this->result->stdout("\tvendor: {$brandName->name}\n");
+                            }
+                            unset($brandModel);
+                        }
                         unset($value, $brandName);
                     }
                 }
@@ -948,7 +954,8 @@ class ExportShopYandexMarketHandler extends ExportHandler
                     if ($value = $element->relatedPropertiesModel->getAttribute($propertyName))
                     {
                         $smartName = $element->relatedPropertiesModel->getSmartAttribute($propertyName);
-                        $data['vendorCode'] = htmlspecialchars($smartName);
+                        $data['vendorCode'] = $smartName;
+                        $this->result->stdout("\tvendorCode: {$smartName}\n");
                         unset($value, $smartName);
                     }
                 }
@@ -1010,14 +1017,15 @@ class ExportShopYandexMarketHandler extends ExportHandler
      *
      * @param $dataFileName
      * @param $data
-     * @return string
+     * @return bool|string
+     * @throws Exception
      */
     protected function generateDataFile($dataFileName, $data)
     {
-        $this->result->stdout("\tvendorCode: {$dataFileName}\n");
+        $this->result->stdout("\t$dataFileName: {$dataFileName}\n");
         $rootFilePath               = $this->rootMarketTempDir . "/" . $dataFileName;
         $rootFilePath               = FileHelper::normalizePath($rootFilePath);
-        $this->result->stdout("\tvendorCode: {$rootFilePath}\n");
+        $this->result->stdout("\t$rootFilePath: {$rootFilePath}\n");
         //Создание дирректории
         if ($dirName = dirname($rootFilePath))
         {
@@ -1030,8 +1038,8 @@ class ExportShopYandexMarketHandler extends ExportHandler
         }
 
         $this->result->stdout("\t\tГенерация файла: {$rootFilePath}\n");
-
-        $treeSitemapContent = \Yii::$app->view->render('@skeeks/cms/exportShopYandexMarket/views/urlsets', [
+        print_r(\Yii::getAlias('@skeeks/cms/export-shop-yandex-market/views/urlsets'));die();
+        $treeSitemapContent = \Yii::$app->view->render('@skeeks/cms/export-shop-yandex-market/views/urlsets', [
             'data' => $data
         ]);
 
