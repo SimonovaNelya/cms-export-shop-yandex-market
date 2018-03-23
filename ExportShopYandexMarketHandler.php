@@ -19,6 +19,8 @@ use skeeks\cms\models\CmsContentElement;
 use skeeks\cms\models\CmsContentPropertyEnum;
 use skeeks\cms\models\CmsTree;
 use skeeks\cms\modules\admin\widgets\BlockTitleWidget;
+use yii\db\ActiveQuery;
+use skeeks\cms\query\CmsActiveQuery;
 use skeeks\cms\relatedProperties\PropertyType;
 use skeeks\cms\relatedProperties\propertyTypes\PropertyTypeElement;
 use skeeks\cms\relatedProperties\propertyTypes\PropertyTypeList;
@@ -29,7 +31,10 @@ use skeeks\modules\cms\money\models\Currency;
 use yii\base\Exception;
 use yii\bootstrap\Alert;
 use yii\console\Application;
-use yii\db\ActiveQuery;
+use yii\data\Pagination;
+
+
+use yii\db\Query;
 use yii\helpers\ArrayHelper;
 use yii\helpers\Console;
 use yii\helpers\FileHelper;
@@ -77,16 +82,36 @@ class ExportShopYandexMarketHandler extends ExportHandler
      */
     public $shop_company = '';
 
+    /**
+     * @var string
+     */
+    public $available = '';
+
 
     /**
      * @var string
      */
     public $vendor = '';
+    /**
+     * @var string
+     */
+    public $vendorArray = '';
 
     /**
      * @var string
      */
     public $vendor_code = '';
+
+    /**
+     * @var null
+     */
+    public $market_dir = null;
+
+    /**
+     * @var int
+     */
+    public $max_urlsets = 500;
+
 
     /**
      * @var string
@@ -100,6 +125,8 @@ class ExportShopYandexMarketHandler extends ExportHandler
     public $filter_property = '';
     public $filter_property_value = '';
 
+    public $mem_start = null;
+
 
     public function init()
     {
@@ -110,6 +137,12 @@ class ExportShopYandexMarketHandler extends ExportHandler
             $rand = \Yii::$app->formatter->asDate(time(), "Y-M-d") . "-" . \Yii::$app->security->generateRandomString(5);
             $this->file_path = "/export/yandex-market/content-{$rand}.xml";
         }
+
+        if (!$this->market_dir)
+        {
+            $this->market_dir = "/export/YaMarket/";
+        }
+
 
         if (!$this->base_url)
         {
@@ -162,6 +195,7 @@ class ExportShopYandexMarketHandler extends ExportHandler
 
             ['shop_name' , 'string'],
             ['shop_company' , 'string'],
+            ['available' , 'integer'],
 
             ['default_sales_notes' , 'string'],
 
@@ -184,6 +218,7 @@ class ExportShopYandexMarketHandler extends ExportHandler
             'vendor_code'        => \Yii::t('skeeks/exportShopYandexMarket', 'Артикул производителя'),
             'shop_name'        => \Yii::t('skeeks/exportShopYandexMarket', 'Короткое название магазина'),
             'shop_company'        => \Yii::t('skeeks/exportShopYandexMarket', 'Полное наименование компании, владеющей магазином'),
+            'available'        => \Yii::t('skeeks/exportShopYandexMarket', 'Поставить у всех активных товаров статус "Под Заказ"'),
 
             'default_sales_notes'        => \Yii::t('skeeks/exportShopYandexMarket', 'вариантах оплаты, описания акций и распродаж '),
             'default_delivery'        => \Yii::t('skeeks/exportShopYandexMarket', 'Возможность курьерской доставки'),
@@ -248,6 +283,9 @@ class ExportShopYandexMarketHandler extends ExportHandler
             echo BlockTitleWidget::widget([
                 'content' => 'Настройки данных товаров'
             ]);
+
+
+            echo $form->field($this, 'available')->checkbox(\Yii::$app->formatter->booleanFormat);
 
 
             echo $form->field($this, 'default_delivery')->listBox(
@@ -388,9 +426,9 @@ class ExportShopYandexMarketHandler extends ExportHandler
         \Yii::$app->urlManager->baseUrl = $this->base_url;
         \Yii::$app->urlManager->scriptUrl = $this->base_url;
 
-        ini_set("memory_limit","8192M");
+        ini_set("memory_limit","16192M");
         set_time_limit(0);
-
+        $this->mem_start = memory_get_usage();
         //Создание дирректории
         if ($dirName = dirname($this->rootFilePath))
         {
@@ -423,14 +461,45 @@ class ExportShopYandexMarketHandler extends ExportHandler
         )));
 		$shop->appendChild(new \DOMElement('platform', "SkeekS CMS"));
 
-
         $this->_appendCurrencies($shop);
         $this->_appendCategories($shop);
-        $this->_appendOffers($shop);
 
+        $this->_appendOffers();
+
+
+        /**
+         * Проверяем наличие файлов с оферами в папке. Загружаем их в файл маркета.
+         */
+
+        $files = scandir($this->rootMarketTempDir);
+
+        if ($files)
+        {
+            $xoffers = $shop->appendChild(new \DOMElement('offers'));
+            foreach ($files as $file) {
+                if (!strpos($file, '.xml'))
+                {
+                    continue;
+                }
+                $doc = new \DOMDocument();
+                $doc->preserveWhiteSpace = false;
+
+                $doc->load($this->rootMarketTempDir.'/'.$file);
+
+                $ListOffer = $doc->getElementsByTagName("offer");
+
+                foreach ($ListOffer as $offer){
+                    $node = $xml->importNode($offer, true); //выбираем корнев. узел
+                    $xoffers->appendChild($node); //добавляем дочерним к корневом <src>
+                }
+
+                unlink($this->rootMarketTempDir.'/'.$file);
+                unset($file, $fileXML, $dataText);
+
+            }
+        }
         $xml->formatOutput = true;
         $xml->save($this->rootFilePath);
-
         return $this->result;
     }
 
@@ -475,7 +544,7 @@ class ExportShopYandexMarketHandler extends ExportHandler
         {
             $xcategories = $shop->appendChild(new \DOMElement('categories'));
 
-            $trees = $rootTree->getDescendants()->orderBy(['level' => SORT_ASC])->all();
+            $trees = $rootTree->getDescendants()->active()->orderBy(['level' => SORT_ASC])->all();
             $trees = ArrayHelper::merge([$rootTree], $trees);
             foreach ($trees as $tree)
             {
@@ -487,6 +556,7 @@ class ExportShopYandexMarketHandler extends ExportHandler
                 {
                     $xcurr->appendChild(new \DOMAttr('parentId', $tree->parent->id));
                 }
+                unset($tree);
             }
         }
 
@@ -497,7 +567,7 @@ class ExportShopYandexMarketHandler extends ExportHandler
      *
      * @return $this
      */
-    protected function _appendOffers(\DOMElement $shop)
+    protected function _appendOffers()
     {
         $totalCount = ShopCmsContentElement::find()->where([
             'content_id' => $this->content_id
@@ -515,61 +585,102 @@ class ExportShopYandexMarketHandler extends ExportHandler
         if ($activeTotalCount)
         {
             $successAdded = 0;
-            $xoffers = $shop->appendChild(new \DOMElement('offers'));
+            //$xoffers = $shop->appendChild(new \DOMElement('offers'));
             /**
              * @var ShopCmsContentElement $element
+             * @var Query $query
              */
-            foreach (ShopCmsContentElement::find()->active()->andWhere([
-                'content_id' => $this->content_id
-            ])->each(10) as $element)
+            $query = (new Query())
+                ->select('id')
+                ->from(ShopCmsContentElement::tableName())
+                ->where([
+                    'content_id' => $this->content_id,
+                    'active'    => 'Y'
+                    ]
+                );
+            $i = 0;
+            $pages = new Pagination([
+                'totalCount'        => $activeTotalCount,
+                'defaultPageSize'   => $this->max_urlsets,
+                'pageSizeLimit'   => [1, $this->max_urlsets],
+            ]);
+
+            for ($i >= 0; $i < $pages->pageCount; $i ++)
             {
-                try
+                $this->result->stdout("\tЗанято памяти: \n". (memory_get_usage() - $this->mem_start));
+                $pages->setPage($i);
+
+                $this->result->stdout("\t\t\t\t Page = {$i}\n");
+                $this->result->stdout("\t\t\t\t Offset = {$pages->offset}\n");
+                $this->result->stdout("\t\t\t\t limit = {$pages->limit}\n");
+
+                $result = [];
+                foreach ($query->offset($pages->offset)->limit($pages->limit)->each(200) as $elementId)
                 {
-                    if (!$element->shopProduct)
+                    $element = ShopCmsContentElement::findOne($elementId['id']);
+                    try
                     {
-                        throw new Exception("Нет данных для магазина");
-                        continue;
-                    }
-
-                    if (!$element->shopProduct->baseProductPrice ||
-                        !$element->shopProduct->baseProductPrice->money->getValue()
-                    )
-                    {
-                        throw new Exception("Нет цены");
-                        continue;
-                    }
-
-                    if ($element->shopProduct->quantity <= 0)
-                    {
-                        throw new Exception("Нет в наличии");
-                        continue;
-                    }
-
-
-                    if ($element->shopProduct->product_type == ShopProduct::TYPE_SIMPLE)
-                    {
-                        $this->_initOffer($xoffers, $element);
-                    } else
-                    {
-                        $offers = $element->tradeOffers;
-                        foreach ($offers as $offer)
+                        if (!$element->shopProduct)
                         {
-                            /*$xoffer = $xoffers->appendChild(new \DOMElement('offer'));
-                            $this->_initOffer($xoffer, $offer);*/
-                            $this->_initOffer($xoffers, $offer);
+                            unset($element,$elementId);
+                            throw new Exception("Нет данных для магазина");
+                            continue;
                         }
-                    }
 
-                    $successAdded ++;
-                } catch (\Exception $e)
-                {
-                    $this->result->stdout("\t\t{$element->id} — {$e->getMessage()}\n", Console::FG_RED);
-                    continue;
+                        if (!$element->shopProduct->baseProductPrice ||
+                            !$element->shopProduct->baseProductPrice->money->getValue()
+                        )
+                        {
+                            unset($element,$elementId);
+                            throw new Exception("Нет цены");
+                            continue;
+                        }
+
+                        if ($element->shopProduct->quantity <= 0)
+                        {
+                            unset($element,$elementId);
+                            throw new Exception("Нет в наличии");
+                            continue;
+                        }
+
+
+                        if ($element->shopProduct->product_type == ShopProduct::TYPE_SIMPLE)
+                        {
+                            $result[$element->id] = $this->_initTextOffer($element);
+
+                        }else
+                        {
+                            $offers = $element->tradeOffers;
+                            foreach ($offers as $offer)
+                            {
+                                $result[] = $this->_initTextOffer($offer);
+                                unset($offer);
+                            }
+                        }
+
+                        $successAdded ++;
+                    } catch (\Exception $e)
+                    {
+                        $this->result->stdout("\t\t{$element->id} — {$e->getMessage()}\n", Console::FG_RED);
+                        continue;
+                    }
+                    unset($element, $elementId);
                 }
+
+                if (!$result) continue;
+                $publicUrl = $this->generateDataFile("temp_offers_page{$i}.xml", $result);
+                $this->result->stdout("\tЗанято памяти: \n". (memory_get_usage() - $this->mem_start."\n"));
+                unset($result);
+                $this->result->stdout("\tФайл успешно сгенерирован: {$publicUrl}\n");
+                $this->result->stdout("\tОбработано товаров: {$successAdded}\n");
+                $this->result->stdout("\tЗанято памяти: \n". (memory_get_usage() - $this->mem_start."\n"));
+                $files[] = $publicUrl;
             }
+
 
             $this->result->stdout("\tДобавлено в файл: {$successAdded}\n");
         }
+        return;
     }
 
     protected function _initOffer($xoffers, ShopCmsContentElement $element)
@@ -580,7 +691,7 @@ class ExportShopYandexMarketHandler extends ExportHandler
             throw new Exception("Нет данных для магазина");
         }
 
-        if ($this->filter_property && $this->filter_property_value)
+        if ($this->filter_property)
         {
             $propertyName = $this->getRelatedPropertyName($this->filter_property);
 
@@ -589,12 +700,19 @@ class ExportShopYandexMarketHandler extends ExportHandler
                 throw new Exception("Не найдено свойство для фильтрации");
             }
 
-            if ($attributeValue != $this->filter_property_value)
+            unset($propertyName);
+
+            if ($this->filter_property_value)
             {
-                throw new Exception("Не найдено свойство для фильтрации");
+                if ($attributeValue != $this->filter_property_value)
+                {
+                    throw new Exception("Не найдено свойство для фильтрации");
+                }
             }
+            unset($attributeValue);
         }
 
+        $xoffer=null;
 
         $xoffer = $xoffers->appendChild(new \DOMElement('offer'));
         $xoffer->appendChild(new \DOMAttr('id', $element->id));
@@ -638,10 +756,13 @@ class ExportShopYandexMarketHandler extends ExportHandler
                 {
                     if ($value = $element->relatedPropertiesModel->getAttribute($propertyName))
                     {
-                        $smartName = $element->relatedPropertiesModel->getSmartAttribute($propertyName);
-                        $xoffer->appendChild(new \DOMElement('vendor', $smartName));
+                        $brandName = CmsContentElement::findOne($value);
+                        $xoffer->appendChild(new \DOMElement('vendor', $brandName->name));
+
+                        unset($value);
                     }
                 }
+                unset($propertyName);
             }
         }
 
@@ -655,8 +776,10 @@ class ExportShopYandexMarketHandler extends ExportHandler
                     {
                         $smartName = $element->relatedPropertiesModel->getSmartAttribute($propertyName);
                         $xoffer->appendChild(new \DOMElement('vendorCode', $smartName));
+                        unset($value);
                     }
                 }
+                unset($propertyName);
             }
         }
 
@@ -697,7 +820,232 @@ class ExportShopYandexMarketHandler extends ExportHandler
         {
             $xoffer->appendChild(new \DOMElement('sales_notes', $this->default_sales_notes));
         }
-
+        unset($element);
         return $xoffer;
+    }
+
+    /***
+     * Сформировать массив данных для сохранения в файл
+     * @param ShopCmsContentElement $element
+     * @return array
+     */
+    protected function _initTextOffer(ShopCmsContentElement $element)
+    {
+
+        $propertyName = null;
+        $attributeValue = null;
+
+        if (!$element->shopProduct)
+        {
+            throw new Exception("Нет данных для магазина");
+        }
+
+        if ($this->filter_property)
+        {
+            $propertyName = $this->getRelatedPropertyName($this->filter_property);
+
+            if (!$attributeValue = $element->relatedPropertiesModel->getAttribute($propertyName))
+            {
+                unset($propertyName, $element);
+                throw new Exception("Не найдено свойство для фильтрации");
+            }
+
+            if ($this->filter_property_value)
+            {
+                $pos = strpos($this->filter_property_value,',');
+
+                if ($pos !== false)
+                {
+                    $filter_property_value = explode(',', $this->filter_property_value);
+
+                    if (!in_array($attributeValue, $filter_property_value))
+                    {
+                        unset($attributeValue, $element, $filter_property_value);
+                        throw new Exception("Не найдено свойство для фильтрации");
+                    }
+                }
+                else
+                {
+                    if ($attributeValue != $this->filter_property_value)
+                    {
+                        unset($attributeValue, $element);
+                        throw new Exception("Не найдено свойство для фильтрации");
+                    }
+
+                }
+            }
+
+        }
+
+        $data = [];
+        $data['offer']['id'] = $element->id;
+
+        if ($element->shopProduct->quantity)
+        {
+            if ($this->available)
+                $data['offer']['available'] = 'false';
+            else
+                $data['offer']['available'] = 'true';
+        } else
+        {
+            unset($element);
+            throw new Exception("Нет в наличии");
+        }
+
+        $data['url'] = htmlspecialchars($element->url);
+        $data['name'] = htmlspecialchars($element->name);
+
+        if ($element->image)
+        {
+            $data['picture'] = htmlspecialchars($this->base_url . $element->image->src);
+        }
+
+        if ($element->tree_id)
+        {
+            $data['categoryId'] = $element->tree_id;
+        }
+
+        if ($element->shopProduct->baseProductPrice)
+        {
+            $money = $element->shopProduct->baseProductPrice->money;
+            $data['price'] = $money->getValue();
+            $data['currencyId'] = $money->getCurrency()->getCurrencyCode();
+        }
+
+
+        if ($this->vendor)
+        {
+            if ($propertyName = $this->getRelatedPropertyName($this->vendor))
+            {
+                if ($element->relatedPropertiesModel)
+                {
+                    if ($value = $element->relatedPropertiesModel->getAttribute($propertyName))
+                    {
+                        if ($this->vendorArray && $this->vendorArray[$value])
+                        {
+                            $data['vendor'] = htmlspecialchars($this->vendorArray[$value]);
+                        }
+                        else
+                        {
+                            $brandModel = CmsContentElement::findOne($value);
+                            $this->vendorArray[$value]  =  $brandModel->name;
+                            $data['vendor'] = htmlspecialchars($brandModel->name);
+                        }
+
+                        unset($value, $brandName);
+                    }
+                }
+                unset($propertyName);
+            }
+        }
+
+        if ($this->vendor_code)
+        {
+            if ($propertyName = $this->getRelatedPropertyName($this->vendor_code))
+            {
+                if ($element->relatedPropertiesModel)
+                {
+                    if ($value = $element->relatedPropertiesModel->getAttribute($propertyName))
+                    {
+                        $smartName = $element->relatedPropertiesModel->getSmartAttribute($propertyName);
+                        $data['vendorCode'] = htmlspecialchars($smartName);
+                        unset($value, $smartName);
+                    }
+                }
+                unset($propertyName);
+            }
+        }
+
+        if ($this->default_delivery)
+        {
+            if ($this->default_delivery == 'Y')
+            {
+                $data['delivery'] = 'true';
+            } else if ($this->default_delivery == 'N')
+            {
+                $data['delivery'] = 'false';
+            }
+        }
+
+        if ($this->default_store)
+        {
+            if ($this->default_store == 'Y')
+            {
+                $data['store'] = 'true';
+            } else if ($this->default_store == 'N')
+            {
+                $data['store'] = 'false';
+            }
+        }
+
+        if ($this->default_pickup)
+        {
+            if ($this->default_pickup == 'Y')
+            {
+                $data['pickup'] = 'true';
+            } else if ($this->default_pickup == 'N')
+            {
+                $data['pickup'] = 'false';
+            }
+        }
+
+        if ($this->default_sales_notes)
+        {
+            $data['sales_notes'] = $this->default_sales_notes;
+        }
+        unset($element);
+
+        return $data;
+    }
+
+    /**
+     * @return bool|string
+     */
+    public function getRootMarketTempDir()
+    {
+        return \Yii::getAlias($this->alias  . $this->market_dir);
+    }
+
+    /**
+     *
+     * @param $dataFileName
+     * @param $data
+     * @return string
+     */
+    protected function generateDataFile($dataFileName, $data)
+    {
+        $this->result->stdout("\tvendorCode: {$dataFileName}\n");
+        $rootFilePath               = $this->rootMarketTempDir . "/" . $dataFileName;
+        $rootFilePath               = FileHelper::normalizePath($rootFilePath);
+        $this->result->stdout("\tvendorCode: {$rootFilePath}\n");
+        //Создание дирректории
+        if ($dirName = dirname($rootFilePath))
+        {
+            $this->result->stdout("\t\tПапка: {$dirName}\n");
+
+            if (!is_dir($dirName) && !FileHelper::createDirectory($dirName))
+            {
+                throw new Exception("Не удалось создать директорию для файла");
+            }
+        }
+
+        $this->result->stdout("\t\tГенерация файла: {$rootFilePath}\n");
+
+        $treeSitemapContent = \Yii::$app->view->render('@skeeks/cms/exportShopYandexMarket/views/urlsets', [
+            'data' => $data
+        ]);
+
+        $fp = fopen($rootFilePath, 'w');
+        // записываем в файл текст
+        fwrite($fp, $treeSitemapContent);
+        // закрываем
+        fclose($fp);
+
+        if (!file_exists($rootFilePath))
+        {
+            throw new Exception("\t\tНе удалось создать файл");
+        }
+        unset($data);
+        return $rootFilePath;
     }
 }
