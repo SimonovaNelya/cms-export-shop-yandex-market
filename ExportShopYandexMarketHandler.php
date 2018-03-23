@@ -586,7 +586,6 @@ class ExportShopYandexMarketHandler extends ExportHandler
             $successAdded = 0;
             //$xoffers = $shop->appendChild(new \DOMElement('offers'));
             /**
-             * @var ShopCmsContentElement $element
              * @var Query $query
              */
             $query = (new Query())
@@ -613,14 +612,28 @@ class ExportShopYandexMarketHandler extends ExportHandler
                 $this->result->stdout("\t\t\t\t limit = {$pages->limit}\n");
 
                 $result = [];
+                $element = false;
+
                 foreach ($query->offset($pages->offset)->limit($pages->limit)->each(200) as $elementId)
                 {
+                    /*
+                     * @var ShopCmsContentElement $element
+                     */
                     $element = ShopCmsContentElement::findOne($elementId['id']);
+
                     try
                     {
+
+                        if (!$element)
+                        {
+                            throw new Exception("Нет данных для магазина");
+                            continue;
+                        }
+
+
                         if (!$element->shopProduct)
                         {
-                            unset($element,$elementId);
+                            unset($elementId);
                             throw new Exception("Нет данных для магазина");
                             continue;
                         }
@@ -629,18 +642,17 @@ class ExportShopYandexMarketHandler extends ExportHandler
                             !$element->shopProduct->baseProductPrice->money->getValue()
                         )
                         {
-                            unset($element,$elementId);
+                            unset($elementId);
                             throw new Exception("Нет цены");
                             continue;
                         }
 
                         if ($element->shopProduct->quantity <= 0)
                         {
-                            unset($element,$elementId);
+                            unset($elementId);
                             throw new Exception("Нет в наличии");
                             continue;
                         }
-
 
                         if ($element->shopProduct->product_type == ShopProduct::TYPE_SIMPLE)
                         {
