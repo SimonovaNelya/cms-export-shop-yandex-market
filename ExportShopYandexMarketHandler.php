@@ -16,6 +16,7 @@ use skeeks\cms\importCsv\ImportCsvHandler;
 use skeeks\cms\importCsvContent\widgets\MatchingInput;
 use skeeks\cms\models\CmsContent;
 use skeeks\cms\models\CmsContentElement;
+use skeeks\cms\models\Tree;
 use skeeks\cms\models\CmsContentPropertyEnum;
 use skeeks\cms\models\CmsTree;
 use skeeks\cms\modules\admin\widgets\BlockTitleWidget;
@@ -106,7 +107,7 @@ class ExportShopYandexMarketHandler extends ExportHandler
     /**
      * @var int
      */
-    public $max_urlsets = 500;
+    public $max_urlsets = 150;
 
     public $vendorArray = '';
 
@@ -614,7 +615,7 @@ class ExportShopYandexMarketHandler extends ExportHandler
                 $result = [];
                 $element = false;
 
-                foreach ($query->offset($pages->offset)->limit($pages->limit)->each(200) as $elementId)
+                foreach ($query->offset($pages->offset)->limit($pages->limit)->each(100) as $elementId)
                 {
                     /*
                      * @var ShopCmsContentElement $element
@@ -656,6 +657,7 @@ class ExportShopYandexMarketHandler extends ExportHandler
 
                         if ($element->shopProduct->product_type == ShopProduct::TYPE_SIMPLE)
                         {
+                            $this->result->stdout("\tЗанято памяти: \n". (memory_get_usage() - $this->mem_start));
                             $result[$element->id] = $this->_initTextOffer($element);
 
                         }else
@@ -663,6 +665,7 @@ class ExportShopYandexMarketHandler extends ExportHandler
                             $offers = $element->tradeOffers;
                             foreach ($offers as $offer)
                             {
+                                $this->result->stdout("\tЗанято памяти: \n". (memory_get_usage() - $this->mem_start));
                                 $result[] = $this->_initTextOffer($offer);
                                 unset($offer);
                             }
@@ -679,6 +682,7 @@ class ExportShopYandexMarketHandler extends ExportHandler
 
                 $publicUrl = $this->generateDataFile("temp_offers_page{$i}.xml", $result);
                 $this->result->stdout("\tФайл успешно сгенерирован: {$publicUrl}\n");
+                $this->result->stdout("\tЗанято памяти: \n". (memory_get_usage() - $this->mem_start));
                 $files[] = $publicUrl;
 
             }
@@ -930,27 +934,21 @@ class ExportShopYandexMarketHandler extends ExportHandler
                 {
                     if ($value = $element->relatedPropertiesModel->getAttribute($propertyName))
                     {
-                        if ($brandName = $this->vendorArray[$value])
+                        $brandModel = CmsContentElement::findOne($value);
+                        if ($brandModel)
                         {
-                            $data['vendor'] = $brandName;
-                            $this->result->stdout("\tvendor: {$brandName}\n");
+                            $data['vendor'] = $brandModel->name;
                         }
                         else
                         {
-                            $brandModel = CmsContentElement::findOne($value);
+                            $brandModel = Tree::findOne($value);
                             if ($brandModel)
                             {
                                 $data['vendor'] = $brandModel->name;
-
-                                $this->vendorArray = [
-                                    $propertyName => $brandName->name
-                                ];
-
-                                $this->result->stdout("\tvendor: {$brandName->name}\n");
                             }
-                            unset($brandModel);
                         }
-                        unset($value, $brandName);
+
+                        unset($value, $brandModel);
                     }
                 }
                 unset($propertyName);
@@ -1013,7 +1011,6 @@ class ExportShopYandexMarketHandler extends ExportHandler
             $data['sales_notes'] = $this->default_sales_notes;
         }
         unset($element);
-
         return $data;
     }
 
@@ -1050,8 +1047,8 @@ class ExportShopYandexMarketHandler extends ExportHandler
         }
 
         $this->result->stdout("\t\tГенерация файла: {$rootFilePath}\n");
-        print_r(\Yii::getAlias('@skeeks/cms/export-shop-yandex-market/views/urlsets'));die();
-        $treeSitemapContent = \Yii::$app->view->render('@skeeks/cms/export-shop-yandex-market/views/urlsets', [
+
+        $treeSitemapContent = \Yii::$app->view->render('@skeeks/cms/exportShopYandexMarket/views/urlsets', [
             'data' => $data
         ]);
 
