@@ -489,7 +489,7 @@ class ExportShopYandexMarketHandler extends ExportHandler
                     $xoffers->appendChild($node); //добавляем дочерним к корневом <src>
                 }
 
-                //unlink($this->rootMarketTempDir.'/'.$file);
+                unlink($this->rootMarketTempDir.'/'.$file);
                 unset($file, $fileXML, $dataText);
 
             }
@@ -657,13 +657,6 @@ class ExportShopYandexMarketHandler extends ExportHandler
                             unset($elementId);
                             throw new Exception("Нет в наличии");
                             continue;
-                        }
-                        if ($this->vendor)
-                        {
-                            $propertyName = $this->getRelatedPropertyName($this->vendor);
-
-                            var_dump($element->relatedPropertiesModel->getProperties()); die();
-                            //$_vendorBrands =
                         }
 
                         if ($element->shopProduct->product_type == ShopProduct::TYPE_SIMPLE)
@@ -939,32 +932,63 @@ class ExportShopYandexMarketHandler extends ExportHandler
          * */
         if ($this->vendor)
         {
-            if ($propertyName = $this->getRelatedPropertyName($this->vendor))
-            {
+            if ($propertyName = $this->getRelatedPropertyName($this->vendor)) {
 
+                if ($element->relatedPropertiesModel) {
+
+                    if ($value = $element->relatedPropertiesModel->getAttribute($propertyName)) {
+                        print_r($element->relatedPropertiesModel->getRelatedProperty($propertyName)->handler->stringValue);
+                        print_r(get_parent_class($element->relatedPropertiesModel->getRelatedProperty($propertyName)->handler));
+                        print_r(get_parent_class($element->relatedPropertiesModel->getRelatedProperty($propertyName)));
+                        die();
+                        $smartName = $element->relatedPropertiesModel->getSmartAttribute($propertyName);
+                        $data['vendor'] = $smartName;
+                        $this->result->stdout("\tvendor: {$smartName}\n");
+                        unset($value, $smartName);
+                    }
+                }
+                unset($propertyName);
+            }
+
+/*
                 if ($element->relatedPropertiesModel)
                 {
                     if ($value = $element->relatedPropertiesModel->getAttribute($propertyName))
                     {
-                        $brandModel = CmsContentElement::findOne($value);
-                        if ($brandModel)
+                        if (!$this->vendorArray[$value])
                         {
-                            $data['vendor'] = htmlspecialchars($brandModel->name);
+                            $brandModel = CmsContentElement::findOne($value);
+                            if ($brandModel)
+                            {
+                                $this->vendorArray =
+                                    [
+                                        $brandModel->id =>  $brandModel->name
+                                    ];
+                                $data['vendor'] = htmlspecialchars($brandModel->name);
+                            }
+                            else
+                            {
+                                $brandModel = Tree::findOne($value);
+                                if ($brandModel)
+                                {
+                                    $this->vendorArray =
+                                        [
+                                            $brandModel->id =>  $brandModel->name
+                                        ];
+                                    $data['vendor'] = htmlspecialchars($brandModel->name);
+                                }
+                            }
                         }
                         else
                         {
-                            $brandModel = Tree::findOne($value);
-                            if ($brandModel)
-                            {
-                                $data['vendor'] = htmlspecialchars($brandModel->name);
-                            }
+                            $data['vendor'] = htmlspecialchars($this->vendorArray[$value]);
                         }
-
                         unset($value, $brandModel);
                     }
                 }
                 unset($propertyName);
             }
+*/
         }
 
         if ($this->vendor_code)
