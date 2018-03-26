@@ -14,12 +14,14 @@ use skeeks\cms\importCsv\handlers\CsvHandler;
 use skeeks\cms\importCsv\helpers\CsvImportRowResult;
 use skeeks\cms\importCsv\ImportCsvHandler;
 use skeeks\cms\importCsvContent\widgets\MatchingInput;
+use skeeks\cms\components\Cms;
 use skeeks\cms\models\CmsContent;
 use skeeks\cms\models\CmsContentElement;
 use skeeks\cms\models\Tree;
 use skeeks\cms\models\CmsContentPropertyEnum;
 use skeeks\cms\models\CmsTree;
 use skeeks\cms\modules\admin\widgets\BlockTitleWidget;
+use skeeks\cms\relatedProperties\models\RelatedPropertiesModel;
 use yii\db\ActiveQuery;
 use skeeks\cms\query\CmsActiveQuery;
 use skeeks\cms\relatedProperties\PropertyType;
@@ -383,20 +385,14 @@ class ExportShopYandexMarketHandler extends ExportHandler
 
         $fields = [];
 
-        foreach ($element->attributeLabels() as $key => $name)
-        {
-            $fields['element.' . $key] = $name;
-        }
-
         foreach ($element->relatedPropertiesModel->attributeLabels() as $key => $name)
         {
             $fields['property.' . $key] = $name . " [свойство]";
         }
 
-        $fields['image'] = 'Ссылка на главное изображение';
-
         return array_merge(['' => ' - '], $fields);
     }
+
 
     public function getRelatedPropertyName($fieldName)
     {
@@ -493,7 +489,7 @@ class ExportShopYandexMarketHandler extends ExportHandler
                     $xoffers->appendChild($node); //добавляем дочерним к корневом <src>
                 }
 
-                unlink($this->rootMarketTempDir.'/'.$file);
+                //unlink($this->rootMarketTempDir.'/'.$file);
                 unset($file, $fileXML, $dataText);
 
             }
@@ -569,15 +565,31 @@ class ExportShopYandexMarketHandler extends ExportHandler
      */
     protected function _appendOffers()
     {
-        $totalCount = ShopCmsContentElement::find()->where([
-            'content_id' => $this->content_id
-        ])->count();
 
-        $this->result->stdout("\tВсего товаров: {$totalCount}\n");
 
-        $activeTotalCount = ShopCmsContentElement::find()->active()->andWhere([
-            'content_id' => $this->content_id
-        ])->count();
+        $activeTotalQuery = ShopCmsContentElement::find()
+            ->with('relatedElementProperties')
+            ->andWhere(['`cms_content_element`.`active`' => Cms::BOOL_Y ])
+            ->andWhere(['`cms_content_element`.`content_id`' => $this->content_id])
+        ;
+
+        /* Если есть условие фильтрации, добавляем его сразу в запрос, чтобы не обрабатывать лишние строки. */
+        if ($this->filter_property)
+        {
+            if ($propertyName = $this->getRelatedPropertyName($this->filter_property)) {
+                $activeTotalQuery
+                    ->joinWith('relatedElementProperties map')
+                    ->joinWith('relatedElementProperties.property property')
+
+                    ->andWhere(['property.code'     => $propertyName]);
+
+                if ($this->filter_property_value)
+                    $activeTotalQuery->andWhere(['map.value'         => $this->filter_property_value]);
+            }
+
+        }
+
+        $activeTotalCount = $activeTotalQuery->count();
 
         $this->result->stdout("\tАктивных товаров найдено: {$activeTotalCount}\n");
 
@@ -586,17 +598,9 @@ class ExportShopYandexMarketHandler extends ExportHandler
         {
             $successAdded = 0;
             //$xoffers = $shop->appendChild(new \DOMElement('offers'));
-            /**
-             * @var Query $query
-             */
-            $query = (new Query())
-                ->select('id')
-                ->from(ShopCmsContentElement::tableName())
-                ->where([
-                    'content_id' => $this->content_id,
-                    'active'    => 'Y'
-                    ]
-                );
+
+            //$activeTotalCountQuery->select(['`cms_content_element`.`id`']);
+
             $i = 0;
             $pages = new Pagination([
                 'totalCount'        => $activeTotalCount,
@@ -615,12 +619,12 @@ class ExportShopYandexMarketHandler extends ExportHandler
                 $result = [];
                 $element = false;
 
-                foreach ($query->offset($pages->offset)->limit($pages->limit)->each(100) as $elementId)
+                foreach ($activeTotalQuery->offset($pages->offset)->limit($pages->limit)->each(100) as $element)
                 {
                     /*
                      * @var ShopCmsContentElement $element
                      */
-                    $element = ShopCmsContentElement::findOne($elementId['id']);
+                    //$element = ShopCmsContentElement::findOne($elementId['id'])->joinWith('relatedElementProperties map');
 
                     try
                     {
@@ -653,6 +657,13 @@ class ExportShopYandexMarketHandler extends ExportHandler
                             unset($elementId);
                             throw new Exception("Нет в наличии");
                             continue;
+                        }
+                        if ($this->vendor)
+                        {
+                            $propertyName = $this->getRelatedPropertyName($this->vendor);
+
+                            var_dump($element->relatedPropertiesModel->getProperties()); die();
+                            //$_vendorBrands =
                         }
 
                         if ($element->shopProduct->product_type == ShopProduct::TYPE_SIMPLE)
@@ -848,7 +859,7 @@ class ExportShopYandexMarketHandler extends ExportHandler
         {
             throw new Exception("Нет данных для магазина");
         }
-
+/*
         if ($this->filter_property)
         {
             $propertyName = $this->getRelatedPropertyName($this->filter_property);
@@ -885,7 +896,7 @@ class ExportShopYandexMarketHandler extends ExportHandler
             }
 
         }
-
+*/
         $data = [];
         $data['offer']['id'] = $element->id;
 
@@ -930,6 +941,7 @@ class ExportShopYandexMarketHandler extends ExportHandler
         {
             if ($propertyName = $this->getRelatedPropertyName($this->vendor))
             {
+
                 if ($element->relatedPropertiesModel)
                 {
                     if ($value = $element->relatedPropertiesModel->getAttribute($propertyName))
@@ -937,14 +949,14 @@ class ExportShopYandexMarketHandler extends ExportHandler
                         $brandModel = CmsContentElement::findOne($value);
                         if ($brandModel)
                         {
-                            $data['vendor'] = $brandModel->name;
+                            $data['vendor'] = htmlspecialchars($brandModel->name);
                         }
                         else
                         {
                             $brandModel = Tree::findOne($value);
                             if ($brandModel)
                             {
-                                $data['vendor'] = $brandModel->name;
+                                $data['vendor'] = htmlspecialchars($brandModel->name);
                             }
                         }
 
