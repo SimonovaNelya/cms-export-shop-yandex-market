@@ -109,9 +109,10 @@ class ExportShopYandexMarketHandler extends ExportHandler
     /**
      * @var int
      */
-    public $max_urlsets = 150;
+    public $max_urlsets = 200;
 
     public $vendorArray = '';
+    public $vendorCodeArray = '';
 
 
     /**
@@ -434,33 +435,38 @@ class ExportShopYandexMarketHandler extends ExportHandler
                 throw new Exception("Не удалось создать директорию для файла");
             }
         }
+        $this->_appendOffers();
+        $this->_doxml();
 
+        return $this->result;
+    }
+
+    protected function _doxml()
+    {
         $imp = new \DOMImplementation();
-		$dtd = $imp->createDocumentType('yml_catalog', '', "shops.dtd");
-		$xml               = $imp->createDocument('', '', $dtd);
-		$xml->encoding     = 'utf-8';
-		//$xml->formatOutput = true;
+        $dtd = $imp->createDocumentType('yml_catalog', '', "shops.dtd");
+        $xml               = $imp->createDocument('', '', $dtd);
+        $xml->encoding     = 'utf-8';
+        //$xml->formatOutput = true;
 
         $yml_catalog = $xml->appendChild(new \DOMElement('yml_catalog'));
-		$yml_catalog->appendChild(new \DOMAttr('date', date('Y-m-d H:i:s')));
+        $yml_catalog->appendChild(new \DOMAttr('date', date('Y-m-d H:i:s')));
 
-            $this->result->stdout("\tДобавление основной информации\n");
+        $this->result->stdout("\tДобавление основной информации\n");
 
         $shop = $yml_catalog->appendChild(new \DOMElement('shop'));
 
         $shop->appendChild(new \DOMElement('name', $this->shop_name ? htmlspecialchars($this->shop_name) : htmlspecialchars(\Yii::$app->name)));
-		$shop->appendChild(new \DOMElement('company', $this->shop_company ? htmlspecialchars($this->shop_company) : htmlspecialchars(\Yii::$app->name)));
-		$shop->appendChild(new \DOMElement('email', htmlspecialchars('info@skeeks.com')));
-		$shop->appendChild(new \DOMElement('url', htmlspecialchars(
+        $shop->appendChild(new \DOMElement('company', $this->shop_company ? htmlspecialchars($this->shop_company) : htmlspecialchars(\Yii::$app->name)));
+        $shop->appendChild(new \DOMElement('email', htmlspecialchars('info@skeeks.com')));
+        $shop->appendChild(new \DOMElement('url', htmlspecialchars(
             $this->base_url
         )));
-		$shop->appendChild(new \DOMElement('platform', "SkeekS CMS"));
+        $shop->appendChild(new \DOMElement('platform', "SkeekS CMS"));
 
 
         $this->_appendCurrencies($shop);
         $this->_appendCategories($shop);
-
-        $this->_appendOffers();
 
 
         /**
@@ -566,15 +572,20 @@ class ExportShopYandexMarketHandler extends ExportHandler
     protected function _appendOffers()
     {
 
+        $activeTotalQuery = (new Query())
+            ->select('id, name, image_id, code, tree_id')
+            ->from(CmsContentElement::tableName())
+            ->andWhere(['`cms_content_element`.`active`' => Cms::BOOL_Y ])
+            ->andWhere(['`cms_content_element`.`content_id`' => $this->content_id]);
 
-        $activeTotalQuery = ShopCmsContentElement::find()
+      /*  $activeTotalQuery = ShopCmsContentElement::find()
             ->with('relatedElementProperties')
             ->andWhere(['`cms_content_element`.`active`' => Cms::BOOL_Y ])
             ->andWhere(['`cms_content_element`.`content_id`' => $this->content_id])
         ;
-
+*/
         /* Если есть условие фильтрации, добавляем его сразу в запрос, чтобы не обрабатывать лишние строки. */
-        if ($this->filter_property)
+  /*      if ($this->filter_property)
         {
             if ($propertyName = $this->getRelatedPropertyName($this->filter_property)) {
                 $activeTotalQuery
@@ -587,12 +598,9 @@ class ExportShopYandexMarketHandler extends ExportHandler
                     $activeTotalQuery->andWhere(['map.value'         => $this->filter_property_value]);
             }
 
-        }
+        }*/
 
         $activeTotalCount = $activeTotalQuery->count();
-
-        $this->result->stdout("\tАктивных товаров найдено: {$activeTotalCount}\n");
-
 
         if ($activeTotalCount)
         {
@@ -617,9 +625,10 @@ class ExportShopYandexMarketHandler extends ExportHandler
                 $this->result->stdout("\t\t\t\t limit = {$pages->limit}\n");
 
                 $result = [];
-                $element = false;
+                $this->result->stdout("\tЗанято памяти: \n". (memory_get_usage() - $this->mem_start));
+                $elements = $activeTotalQuery->offset($pages->offset)->limit($pages->limit)->all();
 
-                foreach ($activeTotalQuery->offset($pages->offset)->limit($pages->limit)->each(100) as $element)
+                foreach ($elements as &$element)
                 {
                     /*
                      * @var ShopCmsContentElement $element
@@ -635,229 +644,99 @@ class ExportShopYandexMarketHandler extends ExportHandler
                             continue;
                         }
 
-
-                        if (!$element->shopProduct)
+                        $shopProduct = (new Query())
+                            ->select('shop_product.id, shop_product.quantity, shop_product_price.price, shop_product.purchasing_currency, shop_product.product_type')
+                            ->from('shop_product')
+                            ->leftJoin('`shop_product_price`',"`shop_product`.id='shop_product_price.product_id'")
+                            ->where(['`shop_product`.id' => $element['id']])
+                            ->orderBy(['`shop_product_price`.updated_at' => SORT_DESC])
+                            ->one();
+                        $productPrice =  (new Query())
+                            ->select('shop_product_price.price')
+                            ->from('shop_product_price')
+                            ->where(['shop_product_price.product_id' => $element['id']])
+                            ->orderBy(['`shop_product_price`.updated_at' => SORT_DESC])
+                        ->one();
+                        $shopProduct['price'] = $productPrice['price'];
+                        unset($productPrice);
+                        if (!$shopProduct)
                         {
-                            unset($elementId);
+
                             throw new Exception("Нет данных для магазина");
                             continue;
                         }
 
-                        if (!$element->shopProduct->baseProductPrice ||
-                            !$element->shopProduct->baseProductPrice->money->getValue()
-                        )
+                        if (!$shopProduct['price'])
                         {
-                            unset($elementId);
                             throw new Exception("Нет цены");
                             continue;
                         }
 
-                        if ($element->shopProduct->quantity <= 0)
+                        if ($shopProduct['quantity'] <= 0)
                         {
-                            unset($elementId);
+
                             throw new Exception("Нет в наличии");
                             continue;
                         }
 
-                        if ($element->shopProduct->product_type == ShopProduct::TYPE_SIMPLE)
+                        if ($shopProduct['product_type'] == ShopProduct::TYPE_SIMPLE)
                         {
-                            $this->result->stdout("\tЗанято памяти: \n". (memory_get_usage() - $this->mem_start));
-                            $result[$element->id] = $this->_initTextOffer($element);
+                            $result[$element['id']] = $this->_initTextOffer($element, $shopProduct);
 
                         }else
                         {
                             $offers = $element->tradeOffers;
                             foreach ($offers as $offer)
                             {
-                                $this->result->stdout("\tЗанято памяти: \n". (memory_get_usage() - $this->mem_start));
-                                $result[] = $this->_initTextOffer($offer);
+                                $result[] = $this->_initTextOffer($element, $shopProduct);
                                 unset($offer);
                             }
                         }
 
                         $successAdded ++;
+                        $element = null;
                     } catch (\Exception $e)
                     {
                         $this->result->stdout("\t\t{$element->id} — {$e->getMessage()}\n", Console::FG_RED);
+                        $element = null;
                         continue;
                     }
-                    unset($element, $elementId);
+                    memory_get_peak_usage();
                 }
-
                 $publicUrl = $this->generateDataFile("temp_offers_page{$i}.xml", $result);
                 $this->result->stdout("\tФайл успешно сгенерирован: {$publicUrl}\n");
-                $this->result->stdout("\tЗанято памяти: \n". (memory_get_usage() - $this->mem_start));
-                $files[] = $publicUrl;
 
+                $files[] = $publicUrl;
+                unset($result, $publicUrl);
+                $this->result->stdout("\tЗанято памяти: \n". (memory_get_usage() - $this->mem_start));
+                $this->result->stdout("\tАктивных товаров найдено: {$activeTotalCount}\n");
             }
+
+            unset($pages, $activeTotalCount);
 
             $this->result->stdout("\tДобавлено в файл: {$successAdded}\n");
         }
         return;
     }
 
-    protected function _initOffer($xoffers, ShopCmsContentElement $element)
+    protected function _initTextOffer($elementArray, $shopProdArray)
     {
-
-        if (!$element->shopProduct)
-        {
-            throw new Exception("Нет данных для магазина");
-        }
-
-        if ($this->filter_property)
-        {
-            $propertyName = $this->getRelatedPropertyName($this->filter_property);
-
-            if (!$attributeValue = $element->relatedPropertiesModel->getAttribute($propertyName))
-            {
-                throw new Exception("Не найдено свойство для фильтрации");
-            }
-
-            unset($propertyName);
-
-            if ($this->filter_property_value)
-            {
-                if ($attributeValue != $this->filter_property_value)
-                {
-                    throw new Exception("Не найдено свойство для фильтрации");
-                }
-            }
-            unset($attributeValue);
-        }
-
-        $xoffer=null;
-
-        $xoffer = $xoffers->appendChild(new \DOMElement('offer'));
-        $xoffer->appendChild(new \DOMAttr('id', $element->id));
-
-
-        if ($element->shopProduct->quantity)
-        {
-            $xoffer->appendChild(new \DOMAttr('available', 'true'));
-        } else
-        {
-            throw new Exception("Нет в наличии");
-            //$xoffer->appendChild(new \DOMAttr('available', 'false'));
-        }
-
-        $xoffer->appendChild(new \DOMElement('url', htmlspecialchars($element->url)));
-        $xoffer->appendChild(new \DOMElement('name', htmlspecialchars($element->name)));
-
-        if ($element->image)
-        {
-            $xoffer->appendChild(new \DOMElement('picture', htmlspecialchars($this->base_url . $element->image->src)));
-        }
-
-        if ($element->tree_id)
-        {
-            $xoffer->appendChild(new \DOMElement('categoryId', $element->tree_id));
-        }
-
-        if ($element->shopProduct->baseProductPrice)
-        {
-            $money = $element->shopProduct->baseProductPrice->money;
-            $xoffer->appendChild(new \DOMElement('price', $money->getValue()));
-            $xoffer->appendChild(new \DOMElement('currencyId', $money->getCurrency()->getCurrencyCode()));
-        }
-
-
-        if ($this->vendor)
-        {
-            if ($propertyName = $this->getRelatedPropertyName($this->vendor))
-            {
-                if ($element->relatedPropertiesModel)
-                {
-                    if ($value = $element->relatedPropertiesModel->getAttribute($propertyName))
-                    {
-                        $smartName = $element->relatedPropertiesModel->getSmartAttribute($propertyName);
-                        $xoffer->appendChild(new \DOMElement('vendor', $smartName));
-
-                        unset($value);
-                    }
-                }
-                unset($propertyName);
-            }
-        }
-
-        if ($this->vendor_code)
-        {
-            if ($propertyName = $this->getRelatedPropertyName($this->vendor_code))
-            {
-                if ($element->relatedPropertiesModel)
-                {
-                    if ($value = $element->relatedPropertiesModel->getAttribute($propertyName))
-                    {
-                        $smartName = $element->relatedPropertiesModel->getSmartAttribute($propertyName);
-                        $xoffer->appendChild(new \DOMElement('vendorCode', $smartName));
-                        unset($value);
-                    }
-                }
-                unset($propertyName);
-            }
-        }
-
-        if ($this->default_delivery)
-        {
-            if ($this->default_delivery == 'Y')
-            {
-                $xoffer->appendChild(new \DOMElement('delivery', 'true'));
-            } else if ($this->default_delivery == 'N')
-            {
-                $xoffer->appendChild(new \DOMElement('delivery', 'false'));
-            }
-        }
-
-        if ($this->default_store)
-        {
-            if ($this->default_store == 'Y')
-            {
-                $xoffer->appendChild(new \DOMElement('store', 'true'));
-            } else if ($this->default_store == 'N')
-            {
-                $xoffer->appendChild(new \DOMElement('store', 'false'));
-            }
-        }
-
-        if ($this->default_pickup)
-        {
-            if ($this->default_pickup == 'Y')
-            {
-                $xoffer->appendChild(new \DOMElement('pickup', 'true'));
-            } else if ($this->default_pickup == 'N')
-            {
-                $xoffer->appendChild(new \DOMElement('pickup', 'false'));
-            }
-        }
-
-        if ($this->default_sales_notes)
-        {
-            $xoffer->appendChild(new \DOMElement('sales_notes', $this->default_sales_notes));
-        }
-        unset($element);
-        return $xoffer;
-    }
-
-    /***
-     * Сформировать массив данных для сохранения в файл
-     * @param ShopCmsContentElement $element
-     * @return array
-     */
-    protected function _initTextOffer(ShopCmsContentElement $element)
-    {
-
+        $this->result->stdout("\tТовар: \n". $elementArray['id']);
         $propertyName = null;
         $attributeValue = null;
 
-        if (!$element->shopProduct)
+        if (!$shopProdArray)
         {
             throw new Exception("Нет данных для магазина");
         }
-/*
+
         if ($this->filter_property)
         {
             $propertyName = $this->getRelatedPropertyName($this->filter_property);
 
-            if (!$attributeValue = $element->relatedPropertiesModel->getAttribute($propertyName))
+            $filterValue = $this->getRelatedPropertyValue($propertyName, $elementArray['id']);
+
+            if (!$filterValue)
             {
                 unset($propertyName, $element);
                 throw new Exception("Не найдено свойство для фильтрации");
@@ -871,29 +750,27 @@ class ExportShopYandexMarketHandler extends ExportHandler
                 {
                     $filter_property_value = explode(',', $this->filter_property_value);
 
-                    if (!in_array($attributeValue, $filter_property_value))
+                    if (!in_array($filterValue, $filter_property_value))
                     {
-                        unset($attributeValue, $element, $filter_property_value);
+                        unset($filterValue, $element, $filter_property_value);
                         throw new Exception("Не найдено свойство для фильтрации");
                     }
                 }
                 else
                 {
-                    if ($attributeValue != $this->filter_property_value)
+                    if ($filterValue != $this->filter_property_value)
                     {
-                        unset($attributeValue, $element);
+                        unset($filterValue, $element);
                         throw new Exception("Не найдено свойство для фильтрации");
                     }
-
                 }
             }
-
         }
-*/
-        $data = [];
-        $data['offer']['id'] = $element->id;
 
-        if ($element->shopProduct->quantity)
+        $data = [];
+        $data['offer']['id'] = $elementArray['id'];
+
+        if ($shopProdArray['quantity']>0)
         {
             if ($this->available)
                 $data['offer']['available'] = 'false';
@@ -901,111 +778,98 @@ class ExportShopYandexMarketHandler extends ExportHandler
                 $data['offer']['available'] = 'true';
         } else
         {
-            unset($element);
             throw new Exception("Нет в наличии");
         }
 
-        $data['url'] = htmlspecialchars($element->url);
-        $data['name'] = htmlspecialchars($element->name);
+        $data['url'] = $this->getUrl($elementArray);
 
-        if ($element->image)
+        $data['name'] = htmlspecialchars($elementArray['name']);
+
+        if ($this->getImage($elementArray['image_id']))
         {
-            $data['picture'] = htmlspecialchars($this->base_url . $element->image->src);
+            $data['picture'] = $this->getImage($elementArray['image_id']);
+        }
+        if ($elementArray['tree_id'])
+        {
+            $data['categoryId'] = $elementArray['tree_id'];
         }
 
-        if ($element->tree_id)
+        if ($shopProdArray['price'])
         {
-            $data['categoryId'] = $element->tree_id;
+            $data['price'] = \Yii::$app->formatter->asInteger($shopProdArray['price']);
+            $data['currencyId'] = $shopProdArray['purchasing_currency'];
         }
 
-        if ($element->shopProduct->baseProductPrice)
-        {
-            $money = $element->shopProduct->baseProductPrice->money;
-            $data['price'] = $money->getValue();
-            $data['currencyId'] = $money->getCurrency()->getCurrencyCode();
-        }
-
-        /*
-         * Функция getSmartAttribute не всегда возвращает значение,
-         * даже тогда, когда оно есть, поэтому сделала запрос в базу.
-         * Чтобы не лезть в базу за каждым брендом, выбранный бренд сохраняю в $this->>vendorArray
-         * */
+        /**
+         * формируем бренд
+         */
         if ($this->vendor)
         {
             if ($propertyName = $this->getRelatedPropertyName($this->vendor)) {
 
-                if ($element->relatedPropertiesModel) {
+                $filterValue = $this->getRelatedPropertyValue($propertyName, $elementArray['id']);
 
-                    if ($value = $element->relatedPropertiesModel->getAttribute($propertyName)) {
-                        print_r($element->relatedPropertiesModel->getRelatedProperty($propertyName)->handler->stringValue);
-                        print_r(get_parent_class($element->relatedPropertiesModel->getRelatedProperty($propertyName)->handler));
-                        print_r(get_parent_class($element->relatedPropertiesModel->getRelatedProperty($propertyName)));
-                        die();
-                        $smartName = $element->relatedPropertiesModel->getSmartAttribute($propertyName);
-                        $data['vendor'] = $smartName;
-                        $this->result->stdout("\tvendor: {$smartName}\n");
-                        unset($value, $smartName);
-                    }
-                }
-                unset($propertyName);
-            }
-
-/*
-                if ($element->relatedPropertiesModel)
+                if ($filterValue)
                 {
-                    if ($value = $element->relatedPropertiesModel->getAttribute($propertyName))
+                    if (!$this->vendorArray[$filterValue])
                     {
-                        if (!$this->vendorArray[$value])
-                        {
-                            $brandModel = CmsContentElement::findOne($value);
-                            if ($brandModel)
-                            {
-                                $this->vendorArray =
-                                    [
-                                        $brandModel->id =>  $brandModel->name
-                                    ];
-                                $data['vendor'] = htmlspecialchars($brandModel->name);
-                            }
-                            else
-                            {
-                                $brandModel = Tree::findOne($value);
-                                if ($brandModel)
-                                {
-                                    $this->vendorArray =
-                                        [
-                                            $brandModel->id =>  $brandModel->name
-                                        ];
-                                    $data['vendor'] = htmlspecialchars($brandModel->name);
-                                }
-                            }
-                        }
-                        else
-                        {
-                            $data['vendor'] = htmlspecialchars($this->vendorArray[$value]);
-                        }
-                        unset($value, $brandModel);
-                    }
-                }
-                unset($propertyName);
-            }
-*/
-        }
+                        $brandModel = (new Query())
+                            ->select('name')
+                            ->from(Tree::tableName())
+                            ->where(['id' => $filterValue])
+                            ->one();
 
+                        if ($brandModel)
+                        {
+                            $this->vendorArray =
+                                [
+                                    $filterValue =>  $brandModel['name']
+                                ];
+                            $data['vendor'] = htmlspecialchars($brandModel['name']);
+                        }
+
+                    }
+                    else
+                    {
+                        $data['vendor'] = htmlspecialchars($this->vendorArray[$filterValue]);
+                    }
+                unset($filterValue, $brandModel);
+                }
+
+            }
+
+        }
+        /**
+         * формируем артикул
+         */
         if ($this->vendor_code)
         {
-            if ($propertyName = $this->getRelatedPropertyName($this->vendor_code))
+            $filterValue = $this->getRelatedPropertyValue($propertyName, $elementArray['id']);
+
+            if ($filterValue)
             {
-                if ($element->relatedPropertiesModel)
+                if (!$this->vendorCodeArray[$filterValue])
                 {
-                    if ($value = $element->relatedPropertiesModel->getAttribute($propertyName))
+                    $articuleModel = (new Query())
+                        ->select('name')
+                        ->from(Tree::tableName())
+                        ->where(['id' => $filterValue])
+                        ->one();
+                    if ($articuleModel)
                     {
-                        $smartName = $element->relatedPropertiesModel->getSmartAttribute($propertyName);
-                        $data['vendorCode'] = $smartName;
-                        $this->result->stdout("\tvendorCode: {$smartName}\n");
-                        unset($value, $smartName);
+                        $this->vendorCodeArray =
+                            [
+                                $filterValue =>  $articuleModel['name']
+                            ];
+                        $data['vendorCode'] = htmlspecialchars($articuleModel['name']);
                     }
+
                 }
-                unset($propertyName);
+                else
+                {
+                    $data['vendorCode'] = htmlspecialchars($this->vendorArray[$filterValue]);
+                }
+                unset($filterValue, $articuleModel);
             }
         }
 
@@ -1046,17 +910,112 @@ class ExportShopYandexMarketHandler extends ExportHandler
         {
             $data['sales_notes'] = $this->default_sales_notes;
         }
-        unset($element);
+        $element = null;
         return $data;
     }
 
     /**
-     * @return bool|string
+     * @return mixed
      */
     public function getRootMarketTempDir()
     {
         return \Yii::getAlias($this->alias  . $this->market_dir);
     }
+
+    /**
+     * @param $propertyName
+     * @param $id
+     */
+    public function getRelatedPropertyValue($propertyName, $id)
+    {
+        if (!$propertyName OR !$id)
+            return;
+
+        $filterSelect = (new Query())
+            ->select('`cms_content_element_property`.value')
+            ->from('`cms_content_element_property`')
+            ->leftJoin('`cms_content_property`',"`cms_content_property`.code='". $propertyName."'")
+            ->where('`cms_content_element_property`.`property_id`=`cms_content_property`.id')
+            ->andWhere(['`cms_content_element_property`.`element_id`' => $id])
+            ->one()
+        ;
+        if ($filterSelect && $filterSelect['value'])
+        {
+            $value = $filterSelect['value'];
+            unset($filterSelect);
+            return $value;
+        }
+
+        return;
+    }
+
+    /**
+     * @param $imageId
+     * @return bool|string
+     */
+    public function getImage($imageId)
+    {
+        if (!$imageId)
+            return false;
+
+        $image = (new Query())
+            ->select('`cms_storage_file`.cluster_file')
+            ->from('`cms_storage_file`')
+            ->where(['`cms_storage_file`.id' => $imageId])
+            ->one()
+        ;
+        if ($image['cluster_file'])
+        {
+            $imageUrl = \Yii::$app->urlManager->baseUrl.'/uploads/all/'.$image['cluster_file'];
+            unset($image);
+            return htmlspecialchars($imageUrl);
+        }
+
+        return false;
+    }
+
+    /**
+     * @return bool|string
+     */
+    public function getUrl($elementArray)
+    {
+
+        if (!$elementArray)
+            return;
+
+        $parentUrl = '';
+        if ($elementArray['tree_id'])
+        {
+            $parentTree = (new Query())
+                ->select('`cms_tree`.code, `cms_tree`.pids')
+                ->from('`cms_tree`')
+                ->where(['`cms_tree`.id' => $elementArray['tree_id']])
+                ->one()
+            ;
+
+            if ($parentTree['pids'])
+            {
+                $pidsArr = str_replace('/', ', ', $parentTree['pids']);
+
+                $parentTrees = (new Query())
+                    ->select('`cms_tree`.code')
+                    ->from('`cms_tree`')
+                    ->where(['`cms_tree`.id'=>explode(',', $pidsArr)])
+                    ->all()
+                ;
+                $parentUrl = '';
+                foreach ($parentTrees as &$item) {
+                    if ($item['code'])
+                    {
+                        $parentUrl = $parentUrl.'/'.$item['code'];
+                    }
+                }
+            }
+        }
+        unset($parentTrees, $parentTree);
+        return htmlspecialchars(\Yii::$app->urlManager->baseUrl.$parentUrl.'/'.$elementArray['code'].'/');
+    }
+
 
     /**
      *
