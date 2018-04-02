@@ -1013,7 +1013,7 @@ class ExportShopYandexMarketHandler extends ExportHandler
             }
         }
         unset($parentTrees, $parentTree);
-        return htmlspecialchars(\Yii::$app->urlManager->baseUrl.$parentUrl.'/'.$elementArray['code'].'/');
+        return htmlspecialchars(\Yii::$app->urlManager->baseUrl.$parentUrl.'/'.$elementArray['id'].'-'.$elementArray['code'].'/');
     }
 
 
